@@ -1,9 +1,10 @@
 import bpy
+import math
 
 bl_info = {
     "name": "True One - Roblox Exporter",
     "author": "Kaique Klock",
-    "version": (1, 2, 4),
+    "version": (1, 3, 0),  # Avançamos para o marco do Sprint 3
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Roblox Tool",
     "description": "Valida e exporta malhas e rigs do Blender para o Roblox Studio em um clique.",
@@ -20,7 +21,8 @@ def check_mesh_health(obj):
     has_unapplied_scale = any(abs(s - 1.0) > 0.001 for s in obj.scale)
     has_unapplied_rotation = any(abs(r) > 0.001 for r in obj.rotation_euler)
     if has_unapplied_scale or has_unapplied_rotation:
-        issues.append("Transformações locais não aplicadas (Scale/Rotation).")
+        # Mudamos de Crítico para Aviso: O add-on agora resolve isso sozinho na cópia!
+        warnings.append("Transformações locais não aplicadas (O add-on corrigirá automaticamente na exportação).")
     obj.data.calc_loop_triangles()
     tri_count = len(obj.data.loop_triangles)
     ROBLOX_TRI_LIMIT = 21000
@@ -61,7 +63,45 @@ def duplicate_and_isolate_object(context, original_obj):
     print(f"[MOTOR] Cópia temporária isolada com sucesso: {temp_obj.name}")
     return temp_obj, temp_collection
 
-# --- 3. INTERFACE E OPERADORES ---
+# --- 3. MOTOR DO SPRINT 3: AUTOMACÕES INVISÍVEIS ---
+
+def apply_transforms_to_temp_object(context, temp_obj):
+    """Força a aplicação de Rotação e Escala na cópia temporária de forma invisível"""
+    print(f"[SPRINT 3] Aplicando Rotação e Escala no objeto: {temp_obj.name}")
+    old_active = context.view_layer.objects.active
+    try:
+        context.view_layer.objects.active = temp_obj
+        bpy.ops.object.select_all(action='DESELECT')
+        temp_obj.select_set(True)
+        # Executa o comando equivalente ao Ctrl + A (Zera rotação e escala na geometria)
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        print(f"[SPRINT 3] Transformações aplicadas! Nova Escala: {temp_obj.scale[:]}")
+    except Exception as e:
+        print(f"[ERRO SPRINT 3] Falha ao aplicar transformações: {str(e)}")
+    finally:
+        context.view_layer.objects.active = old_active
+
+def fix_coordinate_system_z_to_y(context, temp_obj):
+    """Rotaciona a cópia temporária para alinhar o padrão Z-Up do Blender ao Y-Up do Roblox"""
+    print(f"[SPRINT 3] Corrigindo eixos de rotação (Z-Up para Y-Up) no objeto: {temp_obj.name}")
+    old_active = context.view_layer.objects.active
+    try:
+        context.view_layer.objects.active = temp_obj
+        bpy.ops.object.select_all(action='DESELECT')
+        temp_obj.select_set(True)
+        
+        # Rotaciona o objeto temporário em -90 graus no eixo X
+        temp_obj.rotation_euler = (math.radians(-90), 0.0, 0.0)
+        
+        # Aplica a rotação imediatamente para fixar a malha em pé no espaço tridimensional
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+        print(f"[SPRINT 3] Eixos corrigidos com sucesso para o padrão Roblox.")
+    except Exception as e:
+        print(f"[ERRO SPRINT 3] Falha ao corrigir eixos de rotação: {str(e)}")
+    finally:
+        context.view_layer.objects.active = old_active
+
+# --- 4. INTERFACE E OPERADORES ---
 
 class ROBLOX_OT_error_dialog(bpy.types.Operator):
     bl_idname = "roblox.error_dialog"
@@ -104,8 +144,9 @@ class ROBLOX_OT_verify_export(bpy.types.Operator):
         elif all_warnings:
             report_msg += "Avisos de Otimização (Exportação Permitida):\n"
             for warn in all_warnings: report_msg += f" - AVISO: {warn}\n"
+            report_msg += "\n[MÁGICA]: O add-on aplicará as correções automaticamente na cópia de exportação!"
         else:
-            report_msg += "SUCESSO: Seu modelo está 100% otimizado para o Roblox!"
+            report_msg += "SUCESSO: Seu modelo está 100% otimizado para o Roblox e pronto para o pipeline!"
 
         temp_obj = None
         temp_collection = None
@@ -113,7 +154,11 @@ class ROBLOX_OT_verify_export(bpy.types.Operator):
         try:
             print("\n[MOTOR] Iniciando pipeline de exportação isolada...")
             temp_obj, temp_collection = duplicate_and_isolate_object(context, active_obj)
-            print(f"[MOTOR] Objeto pronto para correções automatizadas. (Fase do Sprint 3)")
+            
+            # --- EXECUÇÃO DAS AUTOMAÇÕES DO SPRINT 3 ---
+            apply_transforms_to_temp_object(context, temp_obj)
+            fix_coordinate_system_z_to_y(context, temp_obj)
+            # --------------------------------------------
             
         except Exception as e:
             print(f"[ERRO CRÍTICO NO MOTOR]: {str(e)}")
@@ -122,24 +167,20 @@ class ROBLOX_OT_verify_export(bpy.types.Operator):
             
         finally:
             print("[MOTOR] Limpando ambiente temporário de memória...")
-            # Remove referências de contexto ativo do objeto temporário antes de apagá-lo
             if temp_obj:
                 temp_mesh = temp_obj.data
-                # Desvincula o objeto da coleção antes de deletar
                 if temp_collection and temp_obj.name in temp_collection.objects:
                     temp_collection.objects.unlink(temp_obj)
                 bpy.data.objects.remove(temp_obj, do_unlink=True)
-                # Apaga os dados de malha duplicados isoladamente
                 if temp_mesh:
                     bpy.data.meshes.remove(temp_mesh)
             if temp_collection:
                 bpy.data.collections.remove(temp_collection)
                 
-            # Restaura o objeto original do usuário como o foco ativo do Blender
             if active_obj and active_obj.name in bpy.data.objects:
                 context.view_layer.objects.active = active_obj
                 active_obj.select_set(True)
-            print("[MOTOR] Limpeza concluída com sucesso.")
+            print("[MOTOR] Limpeza concluída com sucesso. Seu arquivo original está intacto!")
 
         bpy.ops.roblox.error_dialog('INVOKE_DEFAULT', message=report_msg)
         if all_issues: return {'CANCELLED'}
@@ -171,16 +212,25 @@ class ROBLOX_PT_sidebar_panel(bpy.types.Panel):
             
             box.label(text=f"Ativo: {active_obj.name}", icon='OBJECT_DATAMODE')
             if total_errors > 0: box.label(text=f"Status: {total_errors} Erro(s) detectados", icon='COLOR_RED')
-            elif total_warns > 0: box.label(text=f"Status: {total_warns} Aviso(s) pendentes", icon='COLOR_YELLOW')
+            elif total_warns > 0: box.label(text="Status: Precisa de Correção Auto", icon='COLOR_YELLOW')
             else: box.label(text="Status: Pronto para Roblox", icon='COLOR_GREEN')
                 
             layout.separator()
             layout.operator("roblox.verify_export", icon='EXPORT', text="Run Pre-flight Check")
 
-classes = (ROBLOX_OT_error_dialog, ROBLOX_OT_verify_export, ROBLOX_PT_sidebar_panel)
+classes = (
+    ROBLOX_OT_error_dialog, 
+    ROBLOX_OT_verify_export, 
+    ROBLOX_PT_sidebar_panel
+)
 
 def register():
-    for cls in classes: bpy.utils.register_class(cls)
+    for cls in classes: 
+        bpy.utils.register_class(cls)
+
 def unregister():
-    for cls in classes: bpy.utils.unregister_class(cls)
-if __name__ == "__main__": register()
+    for cls in classes: 
+        bpy.utils.unregister_class(cls)
+
+if __name__ == "__main__": 
+    register()
