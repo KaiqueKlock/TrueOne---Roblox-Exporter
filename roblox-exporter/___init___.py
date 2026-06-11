@@ -16,26 +16,37 @@ bl_info = {
 # --- 1. MOTOR DE VALIDAÇÃO ---
 
 def check_mesh_health(obj):
-    if obj.type != 'MESH':
+    # Proteção para garantir que só avalia se for uma malha tridimensional
+    if not obj or obj.type != 'MESH':
         return [], []
     issues = []
     warnings = []
-    has_unapplied_scale = any(abs(s - 1.0) > 0.001 for s in obj.scale)
-    has_unapplied_rotation = any(abs(r) > 0.001 for r in obj.rotation_euler)
-    if has_unapplied_scale or has_unapplied_rotation:
-        # Mudamos de Crítico para Aviso: O add-on agora resolve isso sozinho na cópia!
-        warnings.append("Transformações locais não aplicadas (O add-on corrigirá automaticamente na exportação).")
-    obj.data.calc_loop_triangles()
-    tri_count = len(obj.data.loop_triangles)
-    ROBLOX_TRI_LIMIT = 21000
-    if tri_count > ROBLOX_TRI_LIMIT:
-        warnings.append(f"Alta contagem de triângulos: {tri_count} (Limite ideal Roblox: {ROBLOX_TRI_LIMIT}).")
+    
+    try:
+        has_unapplied_scale = any(abs(s - 1.0) > 0.001 for s in obj.scale)
+        has_unapplied_rotation = any(abs(r) > 0.001 for r in obj.rotation_euler)
+        if has_unapplied_scale or has_unapplied_rotation:
+            warnings.append("Transformações locais não aplicadas (O add-on corrigirá automaticamente).")
+        
+        # Tentativa segura de calcular triângulos sem quebrar a execução se a malha estiver instável
+        if obj.data:
+            obj.data.calc_loop_triangles()
+            tri_count = len(obj.data.loop_triangles)
+            ROBLOX_TRI_LIMIT = 21000
+            if tri_count > ROBLOX_TRI_LIMIT:
+                warnings.append(f"Alta contagem de triângulos: {tri_count} (Limite ideal Roblox: {ROBLOX_TRI_LIMIT}).")
+    except Exception as e:
+        print(f"[AVISO INTERFACE] Falha leve ao escanear geometria: {str(e)}")
+        
     return issues, warnings
 
 def check_rig_health(obj):
+    if not obj:
+        return [], []
     issues = []
     warnings = []
     armature_obj = None
+    
     if obj.type == 'ARMATURE':
         armature_obj = obj
     elif obj.type == 'MESH':
@@ -43,27 +54,41 @@ def check_rig_health(obj):
             if mod.type == 'ARMATURE' and mod.object:
                 armature_obj = mod.object
                 break
-    if armature_obj:
-        bone_names = [bone.name for bone in armature_obj.data.bones]
-        if "HumanoidRootPart" not in bone_names:
-            warnings.append("Aviso de Rig: Não possui o osso raiz 'HumanoidRootPart' (Exigido para R6/R15).")
+                
+    if armature_obj and armature_obj.data:
+        try:
+            bone_names = [bone.name for bone in armature_obj.data.bones]
+            if "HumanoidRootPart" not in bone_names:
+                warnings.append("Aviso de Rig: Falta o osso raiz 'HumanoidRootPart'.")
+                
+            r15_essential_bones = ["LowerTorso", "UpperTorso", "Head", "RightUpperArm", "LeftUpperArm"]
+            missing_r15 = [b for b in r15_essential_bones if b not in bone_names]
+            if missing_r15:
+                warnings.append(f"Aviso de Rig: Ossos padrão R15 ausentes: {', '.join(missing_r15)}.")
+        except Exception as e:
+            print(f"[AVISO INTERFACE] Falha leve ao escanear esqueleto: {str(e)}")
+            
     return issues, warnings
 
 # --- 2. MOTOR DE ISOLAMENTO PROFUNDO (CÓPIA REAL SEPARADA) ---
 
 def duplicate_and_isolate_object(context, original_obj):
-    """Cria uma cópia isolada sem vinculação de malha para evitar ReferenceError"""
+    """Cria uma cópia isolada sem vinculação externa para evitar ReferenceError"""
     temp_collection = bpy.data.collections.new(name="Roblox_Temp_Export")
     context.scene.collection.children.link(temp_collection)
     
-    # Cria uma cópia profunda duplicando os blocos de dados
     temp_obj = original_obj.copy()
     if original_obj.data:
         temp_obj.data = original_obj.data.copy()
         
+    # CORREÇÃO DA DIGITAÇÃO: matrix_world nos dois lados!
+    if original_obj.parent:
+        temp_obj.matrix_world = original_obj.matrix_world
+        temp_obj.parent = None
+        
     temp_collection.objects.link(temp_obj)
-    print(f"[MOTOR] Cópia temporária isolada com sucesso: {temp_obj.name}")
     return temp_obj, temp_collection
+
 
 # --- 3. MOTOR DO SPRINT 3: AUTOMACÕES MATEMÁTICAS E CORREÇÃO DE RIGGING ---
 
@@ -90,50 +115,51 @@ def purge_orphan_vertex_groups(temp_obj):
             if group.weight > 0.0001:  # Ignora pesos irrelevantes
                 group_counts[group.group] += 1
 
-    # Lista os grupos que serão removidos
+    # Lista os nomes dos grupos que serão removidos
     groups_to_remove = []
     for group in temp_obj.vertex_groups:
-        # Condição 1: Grupo está totalmente vazio (sem vértices assinados)
         is_empty = group_counts[group.index] == 0
-        # Condição 2: Existe um Rig, mas o grupo não é o nome de nenhum osso válido
         is_orphan = armature_obj and (group.name not in bone_names)
         
         if is_empty or is_orphan:
-            groups_to_remove.append(group)
+            groups_to_remove.append(group.name) # Guardamos o nome para remoção segura
 
-    # Remove os grupos inválidos de trás para frente (evita quebra de índice)
-    removed_count = len(groups_to_remove)
-    for group in groups_to_remove:
-        temp_obj.vertex_groups.remove(group)
+    # Remove os grupos inválidos buscando pelo nome direto na lista viva
+    for group_name in groups_to_remove:
+        v_group = temp_obj.vertex_groups.get(group_name)
+        if v_group:
+            temp_obj.vertex_groups.remove(v_group)
         
-    print(f"[SPRINT 3] Purga concluída. {removed_count} Vertex Groups inválidos foram removidos.")
-
+    print(f"[SPRINT 3] Purga concluída. {len(groups_to_remove)} Vertex Groups inválidos foram removidos.")
 
 def apply_transforms_to_temp_object(context, temp_obj):
-    """Força a aplicação de Rotação e Escala via Context Override (Seguro contra erros de View Layer)"""
+    """Força a aplicação de Rotação e Escala consolidando a matriz atual nos vértices"""
     print(f"[SPRINT 3] Aplicando Rotação e Escala no objeto: {temp_obj.name}")
     try:
-        # Criamos um contexto customizado para o operador não depender da tela do usuário
-        with context.temp_override(active_object=temp_obj, selected_editable_objects=[temp_obj]):
-            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-        print(f"[SPRINT 3] Transformações aplicadas com sucesso!")
+        if temp_obj.type == 'MESH' and temp_obj.data:
+            # Multiplica a posição física de todos os vértices pela transformação atual do objeto
+            # Isso simula o Ctrl+A de forma 100% pura por baixo dos panos
+            temp_obj.data.transform(temp_obj.matrix_basis)
+            # Reseta os dados da barra lateral (Escala vira 1.0, Rotação vira 0.0)
+            temp_obj.matrix_basis = mathutils.Matrix.Identity(4)
+            print(f"[SPRINT 3] Transformações aplicadas com sucesso via Matriz!")
     except Exception as e:
         print(f"[ERRO SPRINT 3] Falha ao aplicar transformações: {str(e)}")
 
 def fix_coordinate_system_z_to_y(context, temp_obj):
-    """Rotaciona preservando o trabalho do artista e aplica a rotação via Context Override"""
-    print(f"[SPRINT 3] Corrigindo eixos de rotação (Z-Up para Y-Up) no objeto: {temp_obj.name}")
+    """Rotaciona a geometria interna da malha em -90 graus no eixo X de forma estável"""
+    print(f"[SPRINT 3] Convertendo eixos geométricos (Z-Up para Y-Up) em: {temp_obj.name}")
     try:
-        # 1. Rotaciona multiplicando/adicionando à rotação que o artista já tinha feito
-        temp_obj.rotation_euler.rotate_axis('X', math.radians(-90))
-        
-        # 2. Aplica a rotação de forma isolada e segura usando o override de contexto
-        with context.temp_override(active_object=temp_obj, selected_editable_objects=[temp_obj]):
-            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-        print(f"[SPRINT 3] Eixos corrigidos e congelados para o padrão Roblox.")
+        if temp_obj.type == 'MESH' and temp_obj.data:
+            # Cria a matriz pura de rotação de -90 graus no eixo X
+            rotation_matrix = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
+            
+            # Aplica diretamente nos dados físicos da malha. Sem operadores de tela!
+            temp_obj.data.transform(rotation_matrix)
+            temp_obj.data.update()
+            print(f"[SPRINT 3] Vértices convertidos com sucesso para o padrão Roblox.")
     except Exception as e:
-        print(f"[ERRO SPRINT 3] Falha ao corrigir eixos de rotação: {str(e)}")
-
+        print(f"[ERRO SPRINT 3] Falha ao corrigir eixos de rotação interna: {str(e)}")
 
 # --- 4. INTERFACE E OPERADORES ---
 
@@ -162,7 +188,8 @@ def export_to_fbx(context, temp_obj):
                 global_scale=1.0,
                 apply_unit_scale=True,
                 apply_scale_options='FBX_SCALE_NONE',
-                bake_space_transform=False,
+                # CORREÇÃO CRÍTICA: Força o exportador a fixar a nossa rotação de matriz direto no arquivo de saída
+                bake_space_transform=True, 
                 object_types={'MESH', 'ARMATURE'},
                 use_mesh_modifiers=True,
                 mesh_smooth_type='FACE',
@@ -278,25 +305,39 @@ class ROBLOX_PT_sidebar_panel(bpy.types.Panel):
         active_obj = context.active_object
         box = layout.box()
         
-        if not active_obj or not active_obj.select_get():
-            box.label(text="Nenhum objeto selecionado", icon='ZOOM_ALL')
+        # 1. Validação física simples de tipo de objeto (Luzes, Câmeras, Empty, etc.)
+        if not active_obj or active_obj.type not in {'MESH', 'ARMATURE'}:
+            box.label(text="Selecione uma Malha ou Rig", icon='ZOOM_ALL')
             layout.separator()
             row = layout.row()
             row.enabled = False
             row.operator("roblox.verify_export", icon='EXPORT', text="Run Pre-flight Check")
-        else:
+            return
+            
+        box.label(text=f"Ativo: {active_obj.name}", icon='OBJECT_DATAMODE')
+        
+        # 2. Executa as validações complexas dentro de um bloco try/except na interface
+        # Se qualquer checagem interna falhar na matriz tridimensional, o painel NÃO quebra e o botão continua vivo
+        try:
             issues, warnings = check_mesh_health(active_obj)
             rig_issues, rig_warnings = check_rig_health(active_obj)
             total_errors = len(issues) + len(rig_issues)
             total_warns = len(warnings) + len(rig_warnings)
             
-            box.label(text=f"Ativo: {active_obj.name}", icon='OBJECT_DATAMODE')
-            if total_errors > 0: box.label(text=f"Status: {total_errors} Erro(s) detectados", icon='COLOR_RED')
-            elif total_warns > 0: box.label(text="Status: Precisa de Correção Auto", icon='COLOR_YELLOW')
-            else: box.label(text="Status: Pronto para Roblox", icon='COLOR_GREEN')
-                
-            layout.separator()
-            layout.operator("roblox.verify_export", icon='EXPORT', text="Run Pre-flight Check")
+            if total_errors > 0: 
+                box.label(text=f"Status: {total_errors} Erro(s)", icon='COLOR_RED')
+            elif total_warns > 0: 
+                box.label(text="Status: Correção Automática", icon='COLOR_YELLOW')
+            else: 
+                box.label(text="Status: Pronto para Roblox", icon='COLOR_GREEN')
+        except Exception as e:
+            box.label(text="Status: Erro de Leitura Tridimensional", icon='ERROR')
+            print(f"[ERRO PAINEL]: Interface protegida contra colapso gráfico: {str(e)}")
+            
+        # O botão fica no escopo mais seguro possível do painel
+        layout.separator()
+        layout.operator("roblox.verify_export", icon='EXPORT', text="Run Pre-flight Check")
+
 
 # --- 6. REGISTRO DO ADD-ON ---
 
