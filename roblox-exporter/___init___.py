@@ -1,5 +1,6 @@
 import bpy
 import math
+import mathutils
 
 bl_info = {
     "name": "True One - Roblox Exporter",
@@ -63,43 +64,75 @@ def duplicate_and_isolate_object(context, original_obj):
     print(f"[MOTOR] Cópia temporária isolada com sucesso: {temp_obj.name}")
     return temp_obj, temp_collection
 
-# --- 3. MOTOR DO SPRINT 3: AUTOMACÕES INVISÍVEIS ---
+# --- 3. MOTOR DO SPRINT 3: AUTOMACÕES MATEMÁTICAS E CORREÇÃO DE RIGGING ---
+
+def purge_orphan_vertex_groups(temp_obj):
+    """Remove vertex groups que não possuem pesos ou não correspondem a ossos do Rig"""
+    if temp_obj.type != 'MESH' or not temp_obj.vertex_groups:
+        return
+
+    print(f"[SPRINT 3] Iniciando purga de Vertex Groups em: {temp_obj.name}")
+    
+    # Encontra o esqueleto associado (se houver)
+    armature_obj = None
+    for mod in temp_obj.modifiers:
+        if mod.type == 'ARMATURE' and mod.object:
+            armature_obj = mod.object
+            break
+
+    bone_names = set(armature_obj.data.bones.keys()) if armature_obj else set()
+    
+    # Conta quantos vértices estão linkados a cada grupo
+    group_counts = {g.index: 0 for g in temp_obj.vertex_groups}
+    for vert in temp_obj.data.vertices:
+        for group in vert.groups:
+            if group.weight > 0.0001:  # Ignora pesos irrelevantes
+                group_counts[group.group] += 1
+
+    # Lista os grupos que serão removidos
+    groups_to_remove = []
+    for group in temp_obj.vertex_groups:
+        # Condição 1: Grupo está totalmente vazio (sem vértices assinados)
+        is_empty = group_counts[group.index] == 0
+        # Condição 2: Existe um Rig, mas o grupo não é o nome de nenhum osso válido
+        is_orphan = armature_obj and (group.name not in bone_names)
+        
+        if is_empty or is_orphan:
+            groups_to_remove.append(group)
+
+    # Remove os grupos inválidos de trás para frente (evita quebra de índice)
+    removed_count = len(groups_to_remove)
+    for group in groups_to_remove:
+        temp_obj.vertex_groups.remove(group)
+        
+    print(f"[SPRINT 3] Purga concluída. {removed_count} Vertex Groups inválidos foram removidos.")
+
 
 def apply_transforms_to_temp_object(context, temp_obj):
-    """Força a aplicação de Rotação e Escala na cópia temporária de forma invisível"""
+    """Força a aplicação de Rotação e Escala via Context Override (Seguro contra erros de View Layer)"""
     print(f"[SPRINT 3] Aplicando Rotação e Escala no objeto: {temp_obj.name}")
-    old_active = context.view_layer.objects.active
     try:
-        context.view_layer.objects.active = temp_obj
-        bpy.ops.object.select_all(action='DESELECT')
-        temp_obj.select_set(True)
-        # Executa o comando equivalente ao Ctrl + A (Zera rotação e escala na geometria)
-        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-        print(f"[SPRINT 3] Transformações aplicadas! Nova Escala: {temp_obj.scale[:]}")
+        # Criamos um contexto customizado para o operador não depender da tela do usuário
+        with context.temp_override(active_object=temp_obj, selected_editable_objects=[temp_obj]):
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        print(f"[SPRINT 3] Transformações aplicadas com sucesso!")
     except Exception as e:
         print(f"[ERRO SPRINT 3] Falha ao aplicar transformações: {str(e)}")
-    finally:
-        context.view_layer.objects.active = old_active
 
 def fix_coordinate_system_z_to_y(context, temp_obj):
-    """Rotaciona a cópia temporária para alinhar o padrão Z-Up do Blender ao Y-Up do Roblox"""
+    """Rotaciona preservando o trabalho do artista e aplica a rotação via Context Override"""
     print(f"[SPRINT 3] Corrigindo eixos de rotação (Z-Up para Y-Up) no objeto: {temp_obj.name}")
-    old_active = context.view_layer.objects.active
     try:
-        context.view_layer.objects.active = temp_obj
-        bpy.ops.object.select_all(action='DESELECT')
-        temp_obj.select_set(True)
+        # 1. Rotaciona multiplicando/adicionando à rotação que o artista já tinha feito
+        temp_obj.rotation_euler.rotate_axis('X', math.radians(-90))
         
-        # Rotaciona o objeto temporário em -90 graus no eixo X
-        temp_obj.rotation_euler = (math.radians(-90), 0.0, 0.0)
-        
-        # Aplica a rotação imediatamente para fixar a malha em pé no espaço tridimensional
-        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-        print(f"[SPRINT 3] Eixos corrigidos com sucesso para o padrão Roblox.")
+        # 2. Aplica a rotação de forma isolada e segura usando o override de contexto
+        with context.temp_override(active_object=temp_obj, selected_editable_objects=[temp_obj]):
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+        print(f"[SPRINT 3] Eixos corrigidos e congelados para o padrão Roblox.")
     except Exception as e:
         print(f"[ERRO SPRINT 3] Falha ao corrigir eixos de rotação: {str(e)}")
-    finally:
-        context.view_layer.objects.active = old_active
+
 
 # --- 4. INTERFACE E OPERADORES ---
 
@@ -155,10 +188,12 @@ class ROBLOX_OT_verify_export(bpy.types.Operator):
             print("\n[MOTOR] Iniciando pipeline de exportação isolada...")
             temp_obj, temp_collection = duplicate_and_isolate_object(context, active_obj)
             
-            # --- EXECUÇÃO DAS AUTOMAÇÕES DO SPRINT 3 ---
-            apply_transforms_to_temp_object(context, temp_obj)
-            fix_coordinate_system_z_to_y(context, temp_obj)
+            # --- EXECUÇÃO DAS AUTOMAÇÕES DO SPRINT 3 (Sem o parâmetro 'context') ---
+            apply_transforms_to_temp_object(context,temp_obj)
+            fix_coordinate_system_z_to_y(context,temp_obj)
+            purge_orphan_vertex_groups(temp_obj)
             # --------------------------------------------
+
             
         except Exception as e:
             print(f"[ERRO CRÍTICO NO MOTOR]: {str(e)}")
