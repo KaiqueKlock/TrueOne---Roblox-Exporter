@@ -1,6 +1,6 @@
 # 🚀 True One - Roblox Exporter (Blender Add-on)
 
-![Blender Version](https://shields.io/badges/blender)
+![Blender Version]([https://shields.io/badges/blender](https://img.shields.io/badge/-Blender-333333?style=flat&logo=blender))
 
 
 O **True One - Roblox Exporter** é um add-on de código aberto para o Blender desenvolvido em Python. Seu objetivo principal é eliminar o atrito, o retrabalho e os erros manuais que artistas 3D e desenvolvedores enfrentam ao exportar malhas (com e sem rigging) do Blender para o Roblox Studio.
