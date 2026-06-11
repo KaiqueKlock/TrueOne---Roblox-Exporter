@@ -1,22 +1,22 @@
 # 🚀 True One - Roblox Exporter (Blender Add-on)
 
-[![Blender Version](https://shields.io)](https://blender.org)
-[![Language](https://shields.io)](https://python.org)
-[![License](https://shields.io)](LICENSE)
+![Blender Version](https://shields.io)
+![Language](https://shields.io)
+![License](https://shields.io)
 
 O **True One - Roblox Exporter** é um add-on de código aberto para o Blender desenvolvido em Python. Seu objetivo principal é eliminar o atrito, o retrabalho e os erros manuais que artistas 3D e desenvolvedores enfrentam ao exportar malhas (com e sem rigging) do Blender para o Roblox Studio.
 
-A ferramenta automatiza tarefas complexas e destrutivas em uma **cópia profunda temporária em memória**, garantindo que o arquivo de trabalho original do artista permaneça 100% intacto.
+A ferramenta automatiza tarefas complexas e destrutivas em uma cópia profunda temporária em memória, garantindo que o arquivo de trabalho original do artista permaneça 100% intacto.
 
 ---
 
 ## 🎯 O Problema & A Solução
 
 ### Principais Dores do Fluxo Tradicional:
-* **Eixos Invertidos:** O Blender utiliza o sistema de coordenadas *Z-Up*, enquanto o Roblox utiliza *Y-Up*. Sem tratamento, personagens importados entram "tombados".
-* **Transformações Não Aplicadas:** Escalas e rotações locais desalinhadas causam deformações severas e quebras nas animações dentro da engine.
-* **Erros de Rigging:** Grupos de vértices vazios (pesos órfãos) provocam rejeição imediata do modelo no importador do Roblox.
-* **Refugo Manual:** Perda de tempo limpando, aplicando modificadores e corrigindo o modelo a cada nova iteração.
+* **Eixos Invertidos**: O Blender utiliza o sistema de coordenadas Z-Up, enquanto o Roblox utiliza Y-Up. Sem tratamento, personagens importados entram "tombados".
+* **Transformações Não Aplicadas**: Escalas e rotações locais desalinhadas causam deformações severas e quebras nas animações dentro da engine.
+* **Erros de Rigging**: Grupos de vértices vazios (pesos órfãos) provocam rejeição imediata do modelo no importador do Roblox.
+* **Refugo Manual**: Perda de tempo limpando, aplicando modificadores e corrigindo o modelo a cada nova iteração.
 
 ### A Abordagem "True One" (Zero Ação Manual):
 O usuário precisa apenas modelar ou aplicar o rig. Ao clicar em **Run Pre-flight Check**, o add-on assume o pipeline: valida a saúde da malha, isola os dados na memória, aplica as correções necessárias e exporta. Tudo em um único clique.
@@ -25,31 +25,34 @@ O usuário precisa apenas modelar ou aplicar o rig. Ao clicar em **Run Pre-fligh
 
 ## 🛠️ Arquitetura Técnica & Decisões de Engenharia
 
-Para manter o add-on leve e de fácil instalação, o projeto adota uma filosofia de **zero dependências externas complexas**, utilizando exclusivamente a API nativa do Blender (`bpy`) e módulos padrão do Python.
+Para manter o add-on leve e de fácil instalação, o projeto adota uma filosofia de zero dependências externas complexas, utilizando exclusivamente a API nativa do Blender (`bpy`) e módulos padrão do Python.
 
-* **Motor de Isolamento Profundo (Anti-Memory Leak):** Durante o desenvolvimento, mitigamos erros críticos de referência (`ReferenceError: StructRNA removed`). A solução foi reestruturar o pipeline para realizar a varredura de dados *antes* do ciclo de vida em memória e implementar uma duplicação profunda de blocos de dados (`original_obj.data.copy()`), separando completamente as dependências de malha.
-* **Gerenciamento de Contexto Seguro:** Utilização rigorosa do bloco `try/finally`. Mesmo que ocorra uma falha crítica no meio do processo, o estado da cena original do usuário é restaurado e todas as coleções ou objetos fantasmas clonados são expurgados da memória RAM.
-* **Validação em Tempo Real:** Conversão geométrica da malha para loops de triângulos para antecipar a contagem exata que o motor gráfico do Roblox interpretará (alertando o limite clássico de 21.000 triângulos).
+* **Motor de Isolamento Profundo (Anti-Memory Leak)**: Mitigamos erros críticos de referência (`ReferenceError: StructRNA removed`). O pipeline realiza a varredura de dados antes do ciclo de vida em memória e implementa uma duplicação profunda de blocos de dados (`original_obj.data.copy()`), separando completamente as dependências de malha. Se o objeto possuir um esqueleto pai, sua matriz global é consolidada (`matrix_world`) e ele é temporariamente desvinculado para manipulação isolada.
+* **Consolidação Geométrica via Matrizes Nativas (`mathutils`)**: Para evitar falhas de contexto de tela e View Layer comuns no uso de operadores visuais (`bpy.ops.object.transform_apply`), o add-on aplica as transformações locais e a conversão de coordenadas Z-Up para Y-Up calculando e multiplicando matrizes puras diretamente nos dados dos vértices físicos (`temp_obj.data.transform()`). Isso garante a eficácia do pipeline mesmo se o artista esquecer de aplicar o `Ctrl + A` no arquivo original.
+* **Gerenciamento de Contexto Seguro & Blindagem de Interface**: Utilização rigorosa do bloco `try/finally`. Mesmo que ocorra uma falha crítica no meio do processo, o estado da cena original do usuário é restaurado e todas as coleções ou objetos fantasmas clonados são expurgados da memória RAM. A interface e as funções de validação são blindadas contra colapsos caso o usuário selecione acidentalmente objetos que não possuem malhas (como luzes e câmeras).
+* **Validação Estrita de Rigging**: O motor de varredura verifica se o esqueleto atende aos requisitos mínimos exigidos pelo Roblox Studio, validando a presença do osso raiz (`HumanoidRootPart`) e alertando a ausência de componentes essenciais da estrutura padrão de avatares R15 (como `Head`, `UpperTorso`, etc.).
+* **Purga Automatizada de Grupos de Vértices**: O add-on varre a malha e remove de forma segura todos os Vertex Groups inválidos ou que não possuam pesos atribuídos, evitando erros de importação no motor gráfico.
 
 ---
 
 ## 📌 Cronograma de Desenvolvimento (Sprints)
 
-- [x] **Sprint 1: Fundação & Interface (UI)**
-  - Metadados universais e registro na categoria `Import-Export`.
-  - Painel lateral dinâmico (**Roblox Tool**) na View3D.
-  - Bloqueio inteligente do operador gráfico caso não haja seleção real na cena.
-- [x] **Sprint 2: Motor de Isolamento & Pre-flight Check**
-  - Sistema de clonagem profunda e isolamento em coleção temporária.
-  - Varredura de integridade (transformações, triângulos e presença de `HumanoidRootPart`).
-  - Interface adaptativa de diálogos flutuantes para relatórios de Erro, Aviso e Sucesso.
-- [ ] **Sprint 3: Automações Matemáticas e Correção de Rigging** *(Próxima Fase)*
-  - Aplicação automática invisível de Escala e Rotação.
-  - Transmutação de coordenadas matriciais (Z-Up para Y-Up).
-  - Purga automatizada de grupos de vértices órfãos.
-- [ ] **Sprint 4: Pipeline de Exportação & Polimento**
-  - Integração com `bpy.ops.export_scene` nativo.
-  - Homologação de importação direta no Roblox Studio.
+* **[✓] Sprint 1: Fundação & Interface (UI)**
+  * Metadados universais e registro na categoria Import-Export.
+  * Painel lateral dinâmico (Roblox Tool) na View3D.
+  * Bloqueio inteligente do operador gráfico caso não haja seleção real na cena.
+* **[✓] Sprint 2: Motor de Isolamento & Pre-flight Check**
+  * Sistema de clonagem profunda e isolamento em coleção temporária.
+  * Varredura de integridade (transformações, triângulos e presença de HumanoidRootPart).
+  * Interface adaptativa de diálogos flutuantes para relatórios de Erro, Aviso e Sucesso.
+* **[✓] Sprint 3: Automações Matemáticas e Correção de Rigging**
+  * Aplicação automática invisível de Escala e Rotação via manipulação de matrizes lineares.
+  * Transmutação de coordenadas tridimensionais (Z-Up do Blender para Y-Up do Roblox).
+  * Purga automatizada de grupos de vértices órfãos e pesos vazios.
+* **[✓] Sprint 4: Pipeline de Exportação & Polimento**
+  * Integração com o exportador `bpy.ops.export_scene.fbx` usando a propriedade `bake_space_transform` ativada.
+  * Resolução automática de caminhos de arquivos inteligente (salva na pasta atual do projeto `.blend`).
+  * Homologação e testes bem-sucedidos de importação direta de malhas rígidas e deformáveis (Skinned Meshes) no Roblox Studio.
 
 ---
 
@@ -57,10 +60,11 @@ Para manter o add-on leve e de fácil instalação, o projeto adota uma filosofi
 
 ### Modo de Desenvolvimento (Recomendado)
 Para contribuir ou testar alterações em tempo real sem precisar zipar o projeto:
+
 1. Clone este repositório em uma pasta de sua preferência.
-2. Crie um link simbólico (atalho de sistema) da subpasta `roblox_exporter` para a pasta de add-ons do seu Blender (ex: AppData no Windows).
-3. No Blender, vá em **Edit > Preferences > Add-ons** e ative o **True One - Roblox Exporter**.
-4. Para atualizar o add-on após modificar o código, basta apertar `F3` no Blender e executar `Reload Scripts`.
+2. Crie um link simbólico (atalho de sistema) da subpasta `roblox_exporter` para a pasta de add-ons do seu Blender (ex: `AppData\Roaming\Blender Foundation\Blender\4.2\scripts\addons` no Windows).
+3. No Blender, vá em **Edit > Preferences > Add-ons** e ative o *True One - Roblox Exporter*.
+4. Para atualizar o add-on após modificar o código, basta apertar `F3` no Blender e executar **Reload Scripts**.
 
 ---
 
@@ -68,4 +72,5 @@ Para contribuir ou testar alterações em tempo real sem precisar zipar o projet
 
 Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
 
- desenvolvido com 💻 por [Kaique Klock](https://github.com)
+---
+Desenvolvido com 💻 por **Kaique Klock**
